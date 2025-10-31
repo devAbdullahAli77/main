@@ -21,14 +21,25 @@ jobs:
       - name: Clone test-repo
         run: |
           git clone https://x-access-token:${{ secrets.TEST_REPO_SYNC }}@github.com/devAbdullahAli77/test-repo.git
+          # Clean up any nested test-repo directories that may have been created
+          rm -rf test-repo/test-repo
           # Note: removed --delete flag to avoid deleting extra files in target
-          rsync -av ./ test-repo/ --exclude '.git' --exclude '.github'
+          # Exclude the nested test-repo directory to prevent infinite nesting
+          rsync -av ./ test-repo/ --exclude '.git' --exclude '.github' --exclude 'test-repo'
 
       - name: Commit and create PR if conflict
         run: |
+          set -xeuo pipefail
           cd test-repo
           git config user.name "github-actions"
           git config user.email "actions@github.com"
+
+          echo "📌 Current directory: $(pwd)"
+          echo "📦 Remote URLs:"; git remote -v || true
+          echo "🔎 Remote branches:"; git branch -r || true
+
+          echo "🔢 Local HEAD before changes: $(git rev-parse HEAD || true)"
+          echo "🔢 Remote origin/main before changes: $(git rev-parse origin/main || true)"
 
           git add .
           if git diff-index --quiet HEAD; then
@@ -37,9 +48,15 @@ jobs:
           fi
 
           git commit -m "Sync from main repo $(date +'%Y-%m-%d %H:%M:%S')"
+          echo "🔢 Local HEAD after commit: $(git rev-parse HEAD)"
+          echo "⏳ Pausing 120s to allow remote changes (conflict test window)"
+          sleep 120
+          echo "🔄 Fetching latest origin/main..."
           git fetch origin main
+          echo "🔢 Remote origin/main after fetch: $(git rev-parse origin/main)"
 
           # Try to rebase with main
+          echo "⚗️ Attempting rebase onto origin/main to detect conflicts..."
           if ! git rebase origin/main; then
             echo "⚠️ Conflict detected — creating pull request."
 
@@ -48,6 +65,7 @@ jobs:
             git rebase --abort || true
             git checkout -b "$BRANCH_NAME"
 
+            echo "🚀 Pushing conflicted branch $BRANCH_NAME to origin"
             git push origin "$BRANCH_NAME"
 
             # Use GitHub CLI to create PR
@@ -63,6 +81,6 @@ jobs:
 
           # If rebase succeeds, push directly
           git push origin main
-          echo "✅ Sync successful!"
+          echo "✅ Sync successful (no conflicts)."
         env:
           GH_TOKEN: ${{ secrets.TEST_REPO_SYNC }}
