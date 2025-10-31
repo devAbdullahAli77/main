@@ -1,4 +1,4 @@
-name: Sync main-repo  → test-repo
+name: Sync main-repo → test-repo
 
 on:
   push:
@@ -21,9 +21,10 @@ jobs:
       - name: Clone test-repo
         run: |
           git clone https://x-access-token:${{ secrets.TEST_REPO_SYNC }}@github.com/devAbdullahAli77/test-repo.git
-          rsync -av --delete ./ test-repo/ --exclude '.git' --exclude '.github'
+          # Note: removed --delete flag to avoid deleting extra files in target
+          rsync -av ./ test-repo/ --exclude '.git' --exclude '.github'
 
-      - name: Commit and Push changes
+      - name: Commit and create PR if conflict
         run: |
           cd test-repo
           git config user.name "github-actions"
@@ -37,9 +38,31 @@ jobs:
 
           git commit -m "Sync from main repo $(date +'%Y-%m-%d %H:%M:%S')"
           git fetch origin main
+
+          # Try to rebase with main
           if ! git rebase origin/main; then
-            echo "❌ Conflict detected! Please resolve manually in test-repo."
-            exit 1
+            echo "⚠️ Conflict detected — creating pull request."
+
+            # Create a temporary branch for the conflicted sync
+            BRANCH_NAME="sync-conflict-$(date +'%Y%m%d-%H%M%S')"
+            git rebase --abort || true
+            git checkout -b "$BRANCH_NAME"
+
+            git push origin "$BRANCH_NAME"
+
+            # Use GitHub CLI to create PR
+            gh pr create \
+              --repo devAbdullahAli77/test-repo \
+              --head "$BRANCH_NAME" \
+              --base main \
+              --title "Sync from main-repo (conflict detected)" \
+              --body "Automatic sync from main-repo failed due to conflicts. Please resolve manually."
+
+            exit 0
           fi
+
+          # If rebase succeeds, push directly
           git push origin main
           echo "✅ Sync successful!"
+        env:
+          GH_TOKEN: ${{ secrets.TEST_REPO_SYNC }}
