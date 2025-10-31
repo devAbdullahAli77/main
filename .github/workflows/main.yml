@@ -34,12 +34,9 @@ jobs:
           git config user.name "github-actions"
           git config user.email "actions@github.com"
 
-          echo "📌 Current directory: $(pwd)"
-          echo "📦 Remote URLs:"; git remote -v || true
-          echo "🔎 Remote branches:"; git branch -r || true
-
+          # Log essential info for debugging (can be reduced in production)
+          echo "📌 Syncing to test-repo..."
           echo "🔢 Local HEAD before changes: $(git rev-parse HEAD || true)"
-          echo "🔢 Remote origin/main before changes: $(git rev-parse origin/main || true)"
 
           git add .
           if git diff-index --quiet HEAD; then
@@ -49,14 +46,14 @@ jobs:
 
           git commit -m "Sync from main repo $(date +'%Y-%m-%d %H:%M:%S')"
           echo "🔢 Local HEAD after commit: $(git rev-parse HEAD)"
-          echo "⏳ Pausing 120s to allow remote changes (conflict test window)"
-          sleep 120
+
+          # Fetch latest changes from remote before attempting rebase
           echo "🔄 Fetching latest origin/main..."
           git fetch origin main
           echo "🔢 Remote origin/main after fetch: $(git rev-parse origin/main)"
 
-          # Try to rebase with main
-          echo "⚗️ Attempting rebase onto origin/main to detect conflicts..."
+          # Try to rebase with main to detect conflicts
+          echo "⚗️ Attempting rebase onto origin/main..."
           if ! git rebase origin/main; then
             echo "⚠️ Conflict detected — creating pull request."
 
