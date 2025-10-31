@@ -26,6 +26,17 @@ jobs:
           # Note: removed --delete flag to avoid deleting extra files in target
           # Exclude the nested test-repo directory to prevent infinite nesting
           rsync -av ./ test-repo/ --exclude '.git' --exclude '.github' --exclude 'test-repo'
+      
+      - name: Fetch latest test-repo changes
+        run: |
+          cd test-repo
+          git fetch origin main
+          echo "🔢 Remote origin/main after fetch: $(git rev-parse origin/main || true)"
+          echo "⏳ Pausing 30s to allow for concurrent changes to test-repo..."
+          sleep 30
+          echo "🔄 Fetching again after pause..."
+          git fetch origin main
+          echo "🔢 Remote origin/main after pause fetch: $(git rev-parse origin/main)"
 
       - name: Commit and create PR if conflict
         run: |
