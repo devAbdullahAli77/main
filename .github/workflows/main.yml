@@ -1,16 +1,16 @@
-name: Sync grand-deepswan → internal-grand-deepswan
+name: Sync main-repo → test-repo
 
 on:
   push:
     branches:
-      - main # Trigger when pushing to main branch in grand-deepswan
+      - main # Trigger when pushing to main branch in main-repo
 
 jobs:
   sync:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout grand-deepswan (source)
+      - name: Checkout main-repo (source)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -20,26 +20,26 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y rsync gh
 
-      - name: Clone internal-grand-deepswan (target)
+      - name: Clone test-repo (target)
         run: |
-          git clone https://x-access-token:${{ secrets.INTERNAL_REPO_SYNC }}@github.com/devAbdullahAli77/internal-grand-deepswan.git
-          rm -rf internal-grand-deepswan/internal-grand-deepswan
+          git clone https://x-access-token:${{ secrets.TEST_REPO_SYNC }}@github.com/devAbdullahAli77/test-repo.git
+          rm -rf test-repo/test-repo
 
       - name: Sync files from source → target
         run: |
-          cd internal-grand-deepswan
+          cd test-repo
           git fetch origin main
           cd ..
           # Sync all files except .git, .github, and repo itself
-          rsync -av ./ internal-grand-deepswan/ \
+          rsync -av ./ test-repo/ \
             --exclude '.git' \
             --exclude '.github' \
-            --exclude 'internal-grand-deepswan'
+            --exclude 'test-repo'
 
       - name: Commit changes or create PR if conflict
         run: |
           set -e
-          cd internal-grand-deepswan
+          cd test-repo
           git config user.name "github-actions"
           git config user.email "actions@github.com"
 
@@ -49,7 +49,7 @@ jobs:
             exit 0
           fi
 
-          git commit -m "Sync from grand-deepswan $(date +'%Y-%m-%d %H:%M:%S')"
+          git commit -m "Sync from main-repo $(date +'%Y-%m-%d %H:%M:%S')"
 
           echo "🔄 Fetching latest changes from origin/main..."
           git fetch origin main
@@ -64,11 +64,11 @@ jobs:
             git push origin "$BRANCH_NAME"
 
             gh pr create \
-              --repo devAbdullahAli77/internal-grand-deepswan \
+              --repo devAbdullahAli77/test-repo \
               --head "$BRANCH_NAME" \
               --base main \
-              --title "Sync from grand-deepswan (conflict detected)" \
-              --body "Automatic sync from grand-deepswan failed due to conflicts. Please resolve manually."
+              --title "Sync from main-repo (conflict detected)" \
+              --body "Automatic sync from main-repo failed due to conflicts. Please resolve manually."
 
             exit 0
           fi
@@ -76,4 +76,4 @@ jobs:
           git push origin main
           echo "✅ Sync successful (no conflicts)."
         env:
-          GH_TOKEN: ${{ secrets.INTERNAL_REPO_SYNC }}
+          GH_TOKEN: ${{ secrets.TEST_REPO_SYNC }}
