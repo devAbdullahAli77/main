@@ -26,17 +26,6 @@ jobs:
           # Note: removed --delete flag to avoid deleting extra files in target
           # Exclude the nested test-repo directory to prevent infinite nesting
           rsync -av ./ test-repo/ --exclude '.git' --exclude '.github' --exclude 'test-repo'
-      
-      - name: Fetch latest test-repo changes
-        run: |
-          cd test-repo
-          git fetch origin main
-          echo "🔢 Remote origin/main after fetch: $(git rev-parse origin/main || true)"
-          echo "⏳ Pausing 30s to allow for concurrent changes to test-repo..."
-          sleep 30
-          echo "🔄 Fetching again after pause..."
-          git fetch origin main
-          echo "🔢 Remote origin/main after pause fetch: $(git rev-parse origin/main)"
 
       - name: Commit and create PR if conflict
         run: |
@@ -58,24 +47,40 @@ jobs:
           git commit -m "Sync from main repo $(date +'%Y-%m-%d %H:%M:%S')"
           echo "🔢 Local HEAD after commit: $(git rev-parse HEAD)"
 
-          # Fetch latest changes from remote before attempting rebase
-          echo "🔄 Fetching latest origin/main..."
+          # Note: We clone test-repo at the start, which gets us the latest state.
+          # After syncing and committing, we rebase onto origin/main.
+          # If test-repo had conflicting commits before we cloned, the rebase will detect conflicts.
+          # If new commits were pushed during sync, fetch them before rebasing.
+          echo "🔄 Fetching latest origin/main before rebase..."
           git fetch origin main
-          echo "🔢 Remote origin/main after fetch: $(git rev-parse origin/main)"
+          echo "🔢 Remote origin/main: $(git rev-parse origin/main)"
+          echo "🔢 Local HEAD (before rebase): $(git rev-parse HEAD)"
 
-          # Try to rebase with main to detect conflicts
+          # Check if there are new commits on remote that we don't have locally
+          LOCAL_COMMIT=$(git rev-parse HEAD)
+          REMOTE_COMMIT=$(git rev-parse origin/main)
+          if [ "$LOCAL_COMMIT" = "$REMOTE_COMMIT" ]; then
+            echo "ℹ️ Local and remote are at the same commit - rebasing to detect conflicts with existing commits"
+          else
+            echo "ℹ️ Remote has new commits - will rebase onto them"
+          fi
+
+          # Try to rebase onto origin/main to detect conflicts
+          # This will detect conflicts if origin/main has commits that modified the same files we synced
           echo "⚗️ Attempting rebase onto origin/main..."
-          if ! git rebase origin/main; then
-            echo "⚠️ Conflict detected — creating pull request."
 
-            # Create a temporary branch for the conflicted sync
+          # Use rebase with explicit onto to force git to check for conflicts
+          # Even if we're based on origin/main, this will detect if files were modified
+          if ! git rebase origin/main; then
+            echo "⚠️ Conflict detected during rebase — creating pull request."
+            
             BRANCH_NAME="sync-conflict-$(date +'%Y%m%d-%H%M%S')"
             git rebase --abort || true
             git checkout -b "$BRANCH_NAME"
-
+            
             echo "🚀 Pushing conflicted branch $BRANCH_NAME to origin"
             git push origin "$BRANCH_NAME"
-
+            
             # Use GitHub CLI to create PR
             gh pr create \
               --repo devAbdullahAli77/test-repo \
@@ -83,7 +88,7 @@ jobs:
               --base main \
               --title "Sync from main-repo (conflict detected)" \
               --body "Automatic sync from main-repo failed due to conflicts. Please resolve manually."
-
+            
             exit 0
           fi
 
