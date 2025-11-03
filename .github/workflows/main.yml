@@ -65,18 +65,78 @@ jobs:
             echo "ℹ️ Remote has new commits - will rebase onto them"
           fi
 
-          # Try to rebase onto origin/main to detect conflicts
-          # This will detect conflicts if origin/main has commits that modified the same files we synced
-          echo "⚗️ Attempting rebase onto origin/main..."
-
-          # Use rebase with explicit onto to force git to check for conflicts
-          # Even if we're based on origin/main, this will detect if files were modified
-          if ! git rebase origin/main; then
-            echo "⚠️ Conflict detected during rebase — creating pull request."
+          # To properly detect conflicts, we compare file contents
+          # First check if origin/main has different content than what we're trying to sync
+          echo "⚗️ Checking for conflicts by comparing file contents..."
+          
+          SYNC_COMMIT=$(git rev-parse HEAD)
+          ORIGINAL_BASE=$(git rev-parse HEAD~1)
+          
+          # Get list of files we modified in our sync commit
+          MODIFIED_FILES=$(git diff --name-only "$ORIGINAL_BASE" "$SYNC_COMMIT")
+          
+          echo "📝 Files modified in sync:"
+          echo "$MODIFIED_FILES"
+          
+          # Check if any of these files differ between our sync and origin/main
+          CONFLICT_DETECTED=false
+          git fetch origin main
+          
+          for file in $MODIFIED_FILES; do
+            if [ -f "$file" ]; then
+              # Check if file exists and differs in origin/main
+              if git show "origin/main:$file" >/dev/null 2>&1; then
+                # File exists in origin/main, compare content
+                OUR_CONTENT=$(git show "$SYNC_COMMIT:$file" 2>/dev/null || cat "$file")
+                REMOTE_CONTENT=$(git show "origin/main:$file" 2>/dev/null)
+                
+                if [ "$OUR_CONTENT" != "$REMOTE_CONTENT" ]; then
+                  # Check if the differences indicate a conflict (same lines modified)
+                  OUR_LINES=$(echo "$OUR_CONTENT" | wc -l)
+                  REMOTE_LINES=$(echo "$REMOTE_CONTENT" | wc -l)
+                  
+                  # If both versions exist and differ, and we're modifying the same file
+                  # that exists in origin/main, there's a potential conflict
+                  echo "⚠️ File $file differs between sync and origin/main"
+                  echo "   Our lines: $OUR_LINES, Remote lines: $REMOTE_LINES"
+                  
+                  # Use cherry-pick to actually test if there's a merge conflict
+                  git reset --hard origin/main >/dev/null 2>&1
+                  if ! git cherry-pick "$SYNC_COMMIT" >/dev/null 2>&1; then
+                    CONFLICT_DETECTED=true
+                    git cherry-pick --abort >/dev/null 2>&1 || true
+                    break
+                  fi
+                  # Reset back to our sync commit for next file check
+                  git reset --hard "$SYNC_COMMIT" >/dev/null 2>&1
+                fi
+              fi
+            fi
+          done
+          
+          # If no conflict detected via file comparison, try full cherry-pick
+          if [ "$CONFLICT_DETECTED" = "false" ]; then
+            echo "🔄 No conflicts detected in file comparison, trying full cherry-pick..."
+            git reset --hard origin/main
             
+            echo "🔢 Reset to origin/main: $(git rev-parse HEAD)"
+            echo "🔢 Will cherry-pick sync commit: $SYNC_COMMIT"
+            
+            # Try to cherry-pick our sync commit onto origin/main
+            # This will detect conflicts if the same files were modified differently
+            if ! git cherry-pick "$SYNC_COMMIT"; then
+              CONFLICT_DETECTED=true
+            fi
+          fi
+          
+          if [ "$CONFLICT_DETECTED" = "true" ]; then
+            echo "⚠️ Conflict detected — creating pull request."
+            git cherry-pick --abort || true
+            git reset --hard "$SYNC_COMMIT" 2>/dev/null || git reset --hard origin/main
+            
+            # Create a branch with our sync commit
             BRANCH_NAME="sync-conflict-$(date +'%Y%m%d-%H%M%S')"
-            git rebase --abort || true
-            git checkout -b "$BRANCH_NAME"
+            git checkout -b "$BRANCH_NAME" "$SYNC_COMMIT" 2>/dev/null || git checkout -b "$BRANCH_NAME"
             
             echo "🚀 Pushing conflicted branch $BRANCH_NAME to origin"
             git push origin "$BRANCH_NAME"
@@ -91,8 +151,12 @@ jobs:
             
             exit 0
           fi
-
-          # If rebase succeeds, push directly
+          
+          # Cherry-pick succeeded - our sync can be applied cleanly
+          # Now we have our sync on top of origin/main, ready to push
+          echo "✅ No conflicts detected - sync can be applied cleanly."
+          
+          # Push directly
           git push origin main
           echo "✅ Sync successful (no conflicts)."
         env:
