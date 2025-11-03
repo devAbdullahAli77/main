@@ -1,42 +1,47 @@
-name: Sync main-repo → test-repo
+name: Sync grand-deepswan → internal-grand-deepswan
 
 on:
   push:
     branches:
-      - main # Trigger when pushing to main branch in main-repo
+      - main # Trigger when pushing to main branch in grand-deepswan
 
 jobs:
   sync:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout main-repo
+      - name: Checkout grand-deepswan (source)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Ensure rsync is available
-        run: sudo apt-get update && sudo apt-get install -y rsync
-
-      - name: Clone test-repo
+      - name: Install rsync and gh
         run: |
-          git clone https://x-access-token:${{ secrets.TEST_REPO_SYNC }}@github.com/devAbdullahAli77/test-repo.git
-          # Clean up any nested test-repo directories that may have been created
-          rm -rf test-repo/test-repo
-          # Note: removed --delete flag to avoid deleting extra files in target
-          # Exclude the nested test-repo directory to prevent infinite nesting
-          rsync -av ./ test-repo/ --exclude '.git' --exclude '.github' --exclude 'test-repo'
+          sudo apt-get update
+          sudo apt-get install -y rsync gh
 
-      - name: Commit and create PR if conflict
+      - name: Clone internal-grand-deepswan (target)
         run: |
-          set -xeuo pipefail
-          cd test-repo
+          git clone https://x-access-token:${{ secrets.INTERNAL_REPO_SYNC }}@github.com/devAbdullahAli77/internal-grand-deepswan.git
+          rm -rf internal-grand-deepswan/internal-grand-deepswan
+
+      - name: Sync files from source → target
+        run: |
+          cd internal-grand-deepswan
+          git fetch origin main
+          cd ..
+          # Sync all files except .git, .github, and repo itself
+          rsync -av ./ internal-grand-deepswan/ \
+            --exclude '.git' \
+            --exclude '.github' \
+            --exclude 'internal-grand-deepswan'
+
+      - name: Commit changes or create PR if conflict
+        run: |
+          set -e
+          cd internal-grand-deepswan
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-
-          # Log essential info for debugging (can be reduced in production)
-          echo "📌 Syncing to test-repo..."
-          echo "🔢 Local HEAD before changes: $(git rev-parse HEAD || true)"
 
           git add .
           if git diff-index --quiet HEAD; then
@@ -44,120 +49,31 @@ jobs:
             exit 0
           fi
 
-          git commit -m "Sync from main repo $(date +'%Y-%m-%d %H:%M:%S')"
-          echo "🔢 Local HEAD after commit: $(git rev-parse HEAD)"
+          git commit -m "Sync from grand-deepswan $(date +'%Y-%m-%d %H:%M:%S')"
 
-          # Note: We clone test-repo at the start, which gets us the latest state.
-          # After syncing and committing, we rebase onto origin/main.
-          # If test-repo had conflicting commits before we cloned, the rebase will detect conflicts.
-          # If new commits were pushed during sync, fetch them before rebasing.
-          echo "🔄 Fetching latest origin/main before rebase..."
+          echo "🔄 Fetching latest changes from origin/main..."
           git fetch origin main
-          echo "🔢 Remote origin/main: $(git rev-parse origin/main)"
-          echo "🔢 Local HEAD (before rebase): $(git rev-parse HEAD)"
 
-          # Check if there are new commits on remote that we don't have locally
-          LOCAL_COMMIT=$(git rev-parse HEAD)
-          REMOTE_COMMIT=$(git rev-parse origin/main)
-          if [ "$LOCAL_COMMIT" = "$REMOTE_COMMIT" ]; then
-            echo "ℹ️ Local and remote are at the same commit - rebasing to detect conflicts with existing commits"
-          else
-            echo "ℹ️ Remote has new commits - will rebase onto them"
-          fi
-
-          # To properly detect conflicts, we compare file contents
-          # First check if origin/main has different content than what we're trying to sync
-          echo "⚗️ Checking for conflicts by comparing file contents..."
-          
-          SYNC_COMMIT=$(git rev-parse HEAD)
-          ORIGINAL_BASE=$(git rev-parse HEAD~1)
-          
-          # Get list of files we modified in our sync commit
-          MODIFIED_FILES=$(git diff --name-only "$ORIGINAL_BASE" "$SYNC_COMMIT")
-          
-          echo "📝 Files modified in sync:"
-          echo "$MODIFIED_FILES"
-          
-          # Check if any of these files differ between our sync and origin/main
-          CONFLICT_DETECTED=false
-          git fetch origin main
-          
-          for file in $MODIFIED_FILES; do
-            if [ -f "$file" ]; then
-              # Check if file exists and differs in origin/main
-              if git show "origin/main:$file" >/dev/null 2>&1; then
-                # File exists in origin/main, compare content
-                OUR_CONTENT=$(git show "$SYNC_COMMIT:$file" 2>/dev/null || cat "$file")
-                REMOTE_CONTENT=$(git show "origin/main:$file" 2>/dev/null)
-                
-                if [ "$OUR_CONTENT" != "$REMOTE_CONTENT" ]; then
-                  # Check if the differences indicate a conflict (same lines modified)
-                  OUR_LINES=$(echo "$OUR_CONTENT" | wc -l)
-                  REMOTE_LINES=$(echo "$REMOTE_CONTENT" | wc -l)
-                  
-                  # If both versions exist and differ, and we're modifying the same file
-                  # that exists in origin/main, there's a potential conflict
-                  echo "⚠️ File $file differs between sync and origin/main"
-                  echo "   Our lines: $OUR_LINES, Remote lines: $REMOTE_LINES"
-                  
-                  # Use cherry-pick to actually test if there's a merge conflict
-                  git reset --hard origin/main >/dev/null 2>&1
-                  if ! git cherry-pick "$SYNC_COMMIT" >/dev/null 2>&1; then
-                    CONFLICT_DETECTED=true
-                    git cherry-pick --abort >/dev/null 2>&1 || true
-                    break
-                  fi
-                  # Reset back to our sync commit for next file check
-                  git reset --hard "$SYNC_COMMIT" >/dev/null 2>&1
-                fi
-              fi
-            fi
-          done
-          
-          # If no conflict detected via file comparison, try full cherry-pick
-          if [ "$CONFLICT_DETECTED" = "false" ]; then
-            echo "🔄 No conflicts detected in file comparison, trying full cherry-pick..."
-            git reset --hard origin/main
-            
-            echo "🔢 Reset to origin/main: $(git rev-parse HEAD)"
-            echo "🔢 Will cherry-pick sync commit: $SYNC_COMMIT"
-            
-            # Try to cherry-pick our sync commit onto origin/main
-            # This will detect conflicts if the same files were modified differently
-            if ! git cherry-pick "$SYNC_COMMIT"; then
-              CONFLICT_DETECTED=true
-            fi
-          fi
-          
-          if [ "$CONFLICT_DETECTED" = "true" ]; then
+          echo "⚗️ Attempting rebase onto origin/main..."
+          if ! git rebase origin/main; then
             echo "⚠️ Conflict detected — creating pull request."
-            git cherry-pick --abort || true
-            git reset --hard "$SYNC_COMMIT" 2>/dev/null || git reset --hard origin/main
-            
-            # Create a branch with our sync commit
+
+            git rebase --abort || true
             BRANCH_NAME="sync-conflict-$(date +'%Y%m%d-%H%M%S')"
-            git checkout -b "$BRANCH_NAME" "$SYNC_COMMIT" 2>/dev/null || git checkout -b "$BRANCH_NAME"
-            
-            echo "🚀 Pushing conflicted branch $BRANCH_NAME to origin"
+            git checkout -b "$BRANCH_NAME"
             git push origin "$BRANCH_NAME"
-            
-            # Use GitHub CLI to create PR
+
             gh pr create \
-              --repo devAbdullahAli77/test-repo \
+              --repo devAbdullahAli77/internal-grand-deepswan \
               --head "$BRANCH_NAME" \
               --base main \
-              --title "Sync from main-repo (conflict detected)" \
-              --body "Automatic sync from main-repo failed due to conflicts. Please resolve manually."
-            
+              --title "Sync from grand-deepswan (conflict detected)" \
+              --body "Automatic sync from grand-deepswan failed due to conflicts. Please resolve manually."
+
             exit 0
           fi
-          
-          # Cherry-pick succeeded - our sync can be applied cleanly
-          # Now we have our sync on top of origin/main, ready to push
-          echo "✅ No conflicts detected - sync can be applied cleanly."
-          
-          # Push directly
+
           git push origin main
           echo "✅ Sync successful (no conflicts)."
         env:
-          GH_TOKEN: ${{ secrets.TEST_REPO_SYNC }}
+          GH_TOKEN: ${{ secrets.INTERNAL_REPO_SYNC }}
